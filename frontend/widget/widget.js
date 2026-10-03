@@ -13,6 +13,39 @@
     // Generate Session ID
     const sessionId = crypto.randomUUID();
 
+    // Fetch Widget Config
+    fetch(`${apiUrl}/widget-config/${tenantId}`)
+        .then(res => res.json())
+        .then(config => {
+            if (config.primary_color) {
+                document.documentElement.style.setProperty('--relay-primary', config.primary_color);
+            }
+            if (config.widget_title) {
+                const titleSpan = document.querySelector('#relay-chat-header span');
+                if (titleSpan) titleSpan.textContent = config.widget_title;
+            }
+            if (config.bot_avatar_url) {
+                const titleSpan = document.querySelector('#relay-chat-header span');
+                if (titleSpan) {
+                    const avatar = document.createElement('img');
+                    avatar.src = config.bot_avatar_url;
+                    avatar.style.width = '28px';
+                    avatar.style.height = '28px';
+                    avatar.style.borderRadius = '50%';
+                    avatar.style.marginRight = '12px';
+                    avatar.style.objectFit = 'cover';
+                    
+                    const container = document.createElement('div');
+                    container.style.display = 'flex';
+                    container.style.alignItems = 'center';
+                    titleSpan.parentNode.insertBefore(container, titleSpan);
+                    container.appendChild(avatar);
+                    container.appendChild(titleSpan);
+                }
+            }
+        })
+        .catch(e => console.error("Could not load widget config", e));
+
     // Inject CSS
     const style = document.createElement('link');
     style.rel = 'stylesheet';
@@ -114,6 +147,9 @@
 
             assistantMsgDiv.innerHTML = '';
             
+            let fullText = '';
+            let sourcesHTML = '';
+            
             // Read SSE Stream
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
@@ -134,9 +170,22 @@
                         
                         try {
                             const data = JSON.parse(dataStr);
-                            if (data.text) {
-                                // Append text and autoscroll
-                                assistantMsgDiv.innerHTML += data.text.replace(/\n/g, '<br>');
+                            if (data.sources) {
+                                if (data.sources.length > 0) {
+                                    sourcesHTML = '<div class="relay-sources" style="margin-top:8px;font-size:11px;color:#64748b;border-top:1px solid #e2e8f0;padding-top:4px;"><strong>Sources:</strong><ul>';
+                                    data.sources.forEach(src => {
+                                        sourcesHTML += `<li>Doc ID: ${src.id}</li>`;
+                                    });
+                                    sourcesHTML += '</ul></div>';
+                                }
+                            } else if (data.text) {
+                                fullText += data.text;
+                                // Use marked if available, otherwise fallback to plain text with br
+                                if (typeof marked !== 'undefined') {
+                                    assistantMsgDiv.innerHTML = marked.parse(fullText) + sourcesHTML;
+                                } else {
+                                    assistantMsgDiv.innerHTML = fullText.replace(/\n/g, '<br>') + sourcesHTML;
+                                }
                                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
                             }
                         } catch (e) {

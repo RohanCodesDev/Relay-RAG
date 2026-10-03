@@ -52,12 +52,30 @@ async def ingest_document(
             "tenant_id": tenant_id,
             "content": chunk,
             "embedding": str(emb.tolist()),
-            "metadata": json.dumps({})
+            "metadata": json.dumps({"filename": "raw_text_input"})
         })
     
     await db.commit()
     
     return {"message": f"Successfully ingested {len(chunks)} chunks for tenant {tenant_id}"}
+
+@router.get("/widget-config/{tenant_id}")
+async def get_widget_config(tenant_id: str, db: AsyncSession = Depends(get_db)):
+    query = text("""
+        SELECT primary_color, widget_title, bot_avatar_url 
+        FROM tenants 
+        WHERE tenant_id = :tid AND is_active = TRUE
+    """)
+    res = await db.execute(query, {"tid": tenant_id})
+    row = res.fetchone()
+    if not row:
+        return {"primary_color": "#0f172a", "widget_title": "AI Assistant", "bot_avatar_url": ""}
+    return {
+        "primary_color": row[0],
+        "widget_title": row[1],
+        "bot_avatar_url": row[2]
+    }
+
 
 @router.post("/chat")
 async def chat(
@@ -81,7 +99,7 @@ async def chat(
     
     # 2. Hybrid search via RRF
     search_query = text("""
-        SELECT content FROM hybrid_search_rrf(
+        SELECT id, content, metadata FROM hybrid_search_rrf(
             :tenant_id, :query_text, CAST(:query_embedding AS VECTOR), 5, 60
         )
     """)
@@ -91,8 +109,12 @@ async def chat(
         "query_embedding": str(query_emb) # pgvector string format
     })
     
-    context_chunks = [row[0] for row in search_res.fetchall()]
+    rows = search_res.fetchall()
+    context_chunks = [row[1] for row in rows]
     context_str = "\n\n".join(context_chunks)
+    
+    # Prepare citations
+    sources = [{"id": row[0], "metadata": row[2] if row[2] else {}} for row in rows]
     
     # 3. Retrieve chat history
     history_query = text("""
@@ -120,7 +142,7 @@ async def chat(
     
     # 5. Prepare LLM Prompt
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "{system_prompt}\n\nContext information is below.\n---------------------\n{context}\n---------------------"),
+        ("system", "{system_prompt}\n\nYou must strictly answer the user's question ONLY using the context information below. If the answer is not contained in the context, you must decline to answer and say 'I'm sorry, I can only answer questions related to the provided context.' Do NOT use any outside knowledge.\n---------------------\n{context}\n---------------------"),
         MessagesPlaceholder(variable_name="chat_history"),
         ("human", "{question}")
     ])
@@ -128,6 +150,7 @@ async def chat(
     chain = prompt | llm
     
     async def generate_sse():
+        yield f"data: {json.dumps({'sources': sources})}\n\n"
         full_response = ""
         async for chunk in chain.astream({
             "system_prompt": tenant_config["system_prompt"],

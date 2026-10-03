@@ -9,3 +9,5 @@ langchain-ollama
 sentence-transformers
 pydantic
 python-dotenv
+PyPDF2
+python-multipart

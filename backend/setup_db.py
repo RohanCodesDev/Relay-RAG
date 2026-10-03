@@ -15,9 +15,18 @@ CREATE TABLE IF NOT EXISTS tenants (
     tenant_id VARCHAR(50) PRIMARY KEY,
     api_key VARCHAR(128) UNIQUE,
     system_prompt TEXT NOT NULL,
+    primary_color VARCHAR(20) DEFAULT '#0f172a',
+    widget_title VARCHAR(100) DEFAULT 'AI Assistant',
+    bot_avatar_url TEXT DEFAULT '',
+    allowed_domains TEXT DEFAULT '*',
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS primary_color VARCHAR(20) DEFAULT '#0f172a';
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS widget_title VARCHAR(100) DEFAULT 'AI Assistant';
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS bot_avatar_url TEXT DEFAULT '';
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS allowed_domains TEXT DEFAULT '*';
 
 -- 3. Document Chunks & Embeddings
 CREATE TABLE IF NOT EXISTS document_chunks (
@@ -51,6 +60,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE INDEX IF NOT EXISTS chat_messages_session_id_idx ON chat_messages (session_id, created_at DESC);
 
 -- 6. Hybrid Search Function (RRF)
+DROP FUNCTION IF EXISTS hybrid_search_rrf(character varying,text,vector,integer,integer);
 CREATE OR REPLACE FUNCTION hybrid_search_rrf(
     p_tenant_id VARCHAR,
     p_query_text TEXT,
@@ -61,19 +71,20 @@ CREATE OR REPLACE FUNCTION hybrid_search_rrf(
 RETURNS TABLE (
     id INT,
     content TEXT,
+    metadata JSONB,
     score NUMERIC
 )
 LANGUAGE sql
 AS $$
 WITH semantic_search AS (
-    SELECT id, content, ROW_NUMBER() OVER (ORDER BY embedding <=> p_query_embedding) AS rank
+    SELECT id, content, metadata, ROW_NUMBER() OVER (ORDER BY embedding <=> p_query_embedding) AS rank
     FROM document_chunks
     WHERE tenant_id = p_tenant_id
     ORDER BY embedding <=> p_query_embedding
     LIMIT p_match_count * 4
 ),
 keyword_search AS (
-    SELECT id, content, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(content_tsv, plainto_tsquery('english', p_query_text)) DESC) AS rank
+    SELECT id, content, metadata, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(content_tsv, plainto_tsquery('english', p_query_text)) DESC) AS rank
     FROM document_chunks
     WHERE tenant_id = p_tenant_id
       AND content_tsv @@ plainto_tsquery('english', p_query_text)
@@ -83,6 +94,7 @@ keyword_search AS (
 SELECT 
     COALESCE(s.id, k.id) AS id,
     COALESCE(s.content, k.content) AS content,
+    COALESCE(s.metadata, k.metadata) AS metadata,
     COALESCE(1.0 / (p_rrf_k + s.rank), 0.0) + COALESCE(1.0 / (p_rrf_k + k.rank), 0.0) AS score
 FROM semantic_search s
 FULL OUTER JOIN keyword_search k ON s.id = k.id
