@@ -13,6 +13,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- 2. Tenant Configurations
 CREATE TABLE IF NOT EXISTS tenants (
     tenant_id VARCHAR(50) PRIMARY KEY,
+    api_key VARCHAR(128) UNIQUE,
     system_prompt TEXT NOT NULL,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
