@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlalchemy
+asyncpg
+pgvector
+langchain
+langchain-postgres
+langchain-ollama
+sentence-transformers
+pydantic
+python-dotenv
