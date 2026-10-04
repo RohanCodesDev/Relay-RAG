@@ -3,7 +3,7 @@
 **Project Lead:** Rohan Chakraborti
 
 ## 1. System Architecture & Scope
-This project establishes a completely dynamic, multi-tenant Retrieval-Augmented Generation (RAG) system. It allows an arbitrary number of websites (tenants) to share a single local LLM engine while strictly isolating their data and business logic.
+This project establishes a completely dynamic, multi-tenant Retrieval-Augmented Generation (RAG) system. It allows an arbitrary number of websites (tenants) to share a highly scalable LLM engine (Groq with local Ollama fallback) while strictly isolating their data and business logic.
 
 The architecture is divided into three layers:
 - **AI Backend (Python/FastAPI):** A stateless microservice handling embedding, database retrieval, and LLM text generation.
@@ -11,10 +11,10 @@ The architecture is divided into three layers:
 - **Frontend (Next.js & Vanilla JS):** A Next.js admin dashboard for tenant management, and a lightweight, embeddable Vanilla JS widget for the client-facing chat interface.
 
 ## 2. Tech Stack & Prerequisites
-- **LLM Engine:** Ollama running locally (`http://localhost:11434`) with the target model downloaded (`ollama pull llama3`).
+- **LLM Engine:** Groq (`openai/gpt-oss-20b`) as primary via API, with local Ollama (`http://localhost:11434` running `tinyllama`) as seamless fallback.
 - **Database:** Neon Serverless PostgreSQL.
 - **Backend Environment:** Python 3.12+ virtual environment.
-- **Python Dependencies:** `fastapi uvicorn sqlalchemy asyncpg pgvector langchain langchain-postgres langchain-ollama sentence-transformers pydantic`
+- **Python Dependencies:** `fastapi uvicorn sqlalchemy asyncpg pgvector langchain langchain-postgres langchain-ollama langchain-groq sentence-transformers pydantic`
 
 ## 3. Unified Database Schema (Neon DB)
 Enforces tenant isolation, handles multi-turn memory, and establishes a Reciprocal Rank Fusion (RRF) function for hybrid vector + keyword search. (SQL Schema is documented in the original plan and to be executed during setup).

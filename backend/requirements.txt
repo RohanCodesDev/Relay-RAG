@@ -11,3 +11,4 @@ pydantic
 python-dotenv
 PyPDF2
 python-multipart
+langchain-groq
