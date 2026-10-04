@@ -1,5 +1,5 @@
 import json
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -29,35 +29,47 @@ fallback_llm = ChatOllama(model="tinyllama", base_url="http://localhost:11434")
 # 3. LangChain automatically handles rate limits, timeouts, and auth errors by switching to the fallback!
 llm = primary_llm.with_fallbacks([fallback_llm])
 
-@router.post("/ingest")
-async def ingest_document(
-    request: IngestRequest, 
-    tenant_config: dict = Depends(get_tenant_config),
-    db: AsyncSession = Depends(get_db)
-):
-    tenant_id = tenant_config["tenant_id"]
+def _process_and_embed_text(text: str):
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
     
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    chunks = splitter.split_text(request.text)
+    chunks = splitter.split_text(text)
+    embeddings = embedding_model.encode(chunks, convert_to_numpy=True).tolist()
+    return list(zip(chunks, embeddings))
+
+async def background_ingest_text(tenant_id: str, text: str):
+    import asyncio
+    loop = asyncio.get_running_loop()
+    chunk_data = await loop.run_in_executor(None, _process_and_embed_text, text)
     
-    embeddings = embedding_model.encode(chunks)
-    
+    if not chunk_data:
+        return
+        
     insert_query = text("""
         INSERT INTO document_chunks (tenant_id, content, embedding, metadata)
         VALUES (:tenant_id, :content, CAST(:embedding AS VECTOR), :metadata)
     """)
     
-    for chunk, emb in zip(chunks, embeddings):
-        await db.execute(insert_query, {
-            "tenant_id": tenant_id,
-            "content": chunk,
-            "embedding": str(emb.tolist()),
-            "metadata": json.dumps({"filename": "raw_text_input"})
-        })
+    async with AsyncSessionLocal() as db:
+        for chunk, emb in chunk_data:
+            await db.execute(insert_query, {
+                "tenant_id": tenant_id,
+                "content": chunk,
+                "embedding": str(emb),
+                "metadata": json.dumps({"filename": "raw_text_input"})
+            })
+        await db.commit()
+
+@router.post("/ingest")
+async def ingest_document(
+    background_tasks: BackgroundTasks,
+    request: IngestRequest, 
+    tenant_config: dict = Depends(get_tenant_config)
+):
+    tenant_id = tenant_config["tenant_id"]
+    background_tasks.add_task(background_ingest_text, tenant_id, request.text)
     
-    await db.commit()
-    
-    return {"message": f"Successfully ingested {len(chunks)} chunks for tenant {tenant_id}"}
+    return {"message": f"Successfully queued ingestion for tenant {tenant_id}"}
 
 @router.get("/widget-config/{tenant_id}")
 async def get_widget_config(tenant_id: str, db: AsyncSession = Depends(get_db)):

@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Header, Request, BackgroundTasks
+import asyncio
+from app.database import AsyncSessionLocal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from app.database import get_db
@@ -160,44 +162,66 @@ async def delete_tenant(tenant_id: str, db: AsyncSession = Depends(get_db)):
     await db.commit()
     return {"message": f"Tenant {tenant_id} and all data purged."}
 
-@router.post("/ingest/file")
-async def ingest_file(
-    file: UploadFile = File(...), 
-    x_tenant_id: str = Header(..., alias="X-Tenant-ID"),
-    db: AsyncSession = Depends(get_db)
-):
-    if file.filename.endswith(".pdf"):
-        content = await file.read()
+def _process_and_embed_file(content: bytes, filename: str):
+    import PyPDF2
+    from io import BytesIO
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from app.rag_service import embedding_model
+
+    if filename.endswith(".pdf"):
         pdf_reader = PyPDF2.PdfReader(BytesIO(content))
         extracted_text = ""
         for page in pdf_reader.pages:
             extracted_text += page.extract_text() + "\n"
-    elif file.filename.endswith((".md", ".txt")):
-        content = await file.read()
+    elif filename.endswith((".md", ".txt")):
         extracted_text = content.decode("utf-8")
     else:
-        raise HTTPException(status_code=400, detail="Only PDF, MD, or TXT files are supported")
-        
+        return []
+
     if not extracted_text.strip():
-        raise HTTPException(status_code=400, detail="Could not extract text from PDF")
+        return []
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = splitter.split_text(extracted_text)
     
     embeddings = embedding_model.encode(chunks, convert_to_numpy=True).tolist()
+    return list(zip(chunks, embeddings))
+
+async def background_ingest_task(tenant_id: str, content: bytes, filename: str):
+    loop = asyncio.get_running_loop()
+    chunk_data = await loop.run_in_executor(None, _process_and_embed_file, content, filename)
     
+    if not chunk_data:
+        return
+        
     insert_query = text("""
         INSERT INTO document_chunks (tenant_id, content, embedding, metadata)
         VALUES (:tenant_id, :content, CAST(:embedding AS VECTOR), :metadata)
     """)
     
-    for chunk, emb in zip(chunks, embeddings):
-        await db.execute(insert_query, {
-            "tenant_id": x_tenant_id,
-            "content": chunk,
-            "embedding": emb,
-            "metadata": json.dumps({"filename": file.filename})
-        })
+    import json
+    async with AsyncSessionLocal() as db:
+        for chunk, emb in chunk_data:
+            await db.execute(insert_query, {
+                "tenant_id": tenant_id,
+                "content": chunk,
+                "embedding": str(emb),
+                "metadata": json.dumps({"filename": filename})
+            })
+        await db.commit()
+
+@router.post("/ingest/file")
+async def ingest_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...), 
+    x_tenant_id: str = Header(..., alias="X-Tenant-ID"),
+    db: AsyncSession = Depends(get_db)
+):
+    if not file.filename.endswith((".pdf", ".md", ".txt")):
+        raise HTTPException(status_code=400, detail="Only PDF, MD, or TXT files are supported")
+        
+    content = await file.read()
     
-    await db.commit()
-    return {"message": f"Successfully ingested PDF ({len(chunks)} chunks) for {x_tenant_id}"}
+    background_tasks.add_task(background_ingest_task, x_tenant_id, content, file.filename)
+    
+    return {"message": f"Processing {file.filename} in the background. It will be available shortly."}
